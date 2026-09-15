@@ -2,6 +2,7 @@ import type { AnalysisDatabase } from "../core/analysis/database";
 import { buildIntel, emuSweep } from "../core/analysis/intel";
 import { packFunction } from "./retrieval";
 import type { AssistantAnswer } from "./assistant";
+import { buildControlFlow } from "../core/analysis/controlFlow";
 
 /**
  * Renders the structured context the LLM receives as compact plaintext —
@@ -47,9 +48,11 @@ export function buildLlmContext(db: AnalysisDatabase, answer: AssistantAnswer, c
   const fn = targetAddr !== undefined ? db.functionByAddr(targetAddr) : null;
   if (fn) {
     const p = packFunction(db, fn, 160);
+    const flow = buildControlFlow(db.decodeFunction(fn, 12000));
     const head: string[] = [
       `${p.name} @ ${hex(p.addr)} · ${p.size} bytes · name source ${p.nameSource}${p.userName ? ` (user name ${p.userName})` : ""} · discovered via ${p.sources.join("+")} · discovery confidence ${Math.round(p.confidence * 100)}%`,
       `Summary: ${p.featuresSummary}`,
+      `Static control flow (up to 12000 instructions): ${flow.blocks.length} basic blocks; ${flow.edges.length} edges; ${flow.unresolved} unresolved or external exits. Indirect jumps and unknown instructions are not resolved; static reachability is not proof of runtime reachability.`,
     ];
     if (p.tags.length) head.push(`Tags: ${p.tags.map((t) => "#" + t).join(" ")}`);
     if (p.comments.length) head.push(...p.comments.slice(0, 6).map((c) => `Comment @ ${hex(c.addr)}: ${c.body.slice(0, 200)}`));

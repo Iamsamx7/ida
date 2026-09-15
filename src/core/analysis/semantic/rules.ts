@@ -1,4 +1,5 @@
 import type { Classification, Evidence, FunctionFeatures } from "../types";
+import { securityRules, DETECTION_LABELS } from "./securityRules";
 
 /**
  * Modular rule engine for semantic classification.
@@ -64,6 +65,7 @@ const str = (patterns: RegExp, label: string, weight: number, id: string, descri
 });
 
 export const defaultRules: Rule[] = [
+  ...securityRules,
   api(/^(malloc|calloc|realloc|free|posix_memalign|memalign|_Znwm|_Znam|_ZdlPv|_ZdaPv|operator new|operator delete|mmap|munmap|mprotect|madvise|malloc_usable_size|mallopt)$/, "memory-management", 0.45, "api.memory", "Heap / memory APIs"),
   api(/^(memcpy|memmove|memset|memcmp|bcopy|bzero|__memcpy_chk|__memmove_chk|__memset_chk|memchr|memrchr|explicit_bzero)$/, "memory-operations", 0.35, "api.memops", "Bulk memory operations (memcpy family)"),
   api(/^(strlen|strcmp|strncmp|strcpy|strncpy|strcat|strstr|strchr|strrchr|strtok|sprintf|snprintf|vsnprintf|sscanf|strtol|strtoul|strtod|atoi|toupper|tolower|isspace|isdigit|_ZNSt.*basic_string|__strlen_chk|strdup|strcasecmp|strncasecmp|strlcpy|strlcat)/, "string-processing", 0.4, "api.string", "C / C++ string APIs"),
@@ -363,10 +365,12 @@ export function classify(ctx: FunctionContext, rules: Rule[] = defaultRules): Cl
     out.push({ label, confidence, level: confidence >= 0.8 ? "high" : confidence >= 0.55 ? "likely" : confidence >= 0.35 ? "possible" : "low", evidence: e.evidence });
   }
   out.sort((a, b) => b.confidence - a.confidence);
-  return out.slice(0, 5);
+  // Keep specific detections even when broad I/O/logging labels score higher.
+  return out;
 }
 
 export const COMPONENT_LABELS = [
+  ...DETECTION_LABELS,
   "memory-management", "memory-operations", "string-processing", "file-io", "networking", "serialization", "rendering", "input-handling",
   "state-management", "state-access", "cryptography", "hashing", "hash-check", "compression", "logging", "configuration", "initialization", "cleanup",
   "synchronization", "threading", "error-handling", "validation", "integrity-check", "anticheat", "ban-check", "game-revive", "jni-bridge", "dynamic-loading", "timing",

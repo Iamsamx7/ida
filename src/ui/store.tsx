@@ -6,8 +6,9 @@ import { ANALYSIS_VERSION, type FunctionRecord, type StageState } from "@/core/a
 import { CPUBackend } from "@/compute/backend";
 import { LocalAssistant } from "@/ai/assistant";
 import { libDescriptor, linkLibraries, type LinkGraph } from "@/core/analysis/link";
+import { mergeAnnotations, type AnnotationBackup } from "@/core/analysis/annotations";
 
-export type CenterTab = "overview" | "disasm" | "pseudo" | "hex" | "elf" | "graph" | "search" | "compare" | "links";
+export type CenterTab = "overview" | "disasm" | "pseudo" | "hex" | "elf" | "graph" | "flow" | "detections" | "search" | "compare" | "links";
 
 /** One library in the workspace. The focused one is mirrored into `db`/`assistant`. */
 export interface LoadedLib {
@@ -79,6 +80,7 @@ interface WorkbenchApi extends WorkbenchState {
   setRightTab(t: RightTab): void;
   setSelection(s: { start: number; end: number } | null): void;
   rename(addr: number, name: string, origin?: "user" | "ai-accepted"): void;
+  importAnnotations(backup: AnnotationBackup): Promise<string>;
   setComment(addr: number, body: string, scope?: "line" | "function"): void;
   toggleBookmark(addr: number, label?: string, kind?: "address" | "function" | "string" | "data"): void;
   addTag(addr: number, tag: string): void;
@@ -283,6 +285,29 @@ export function WorkbenchProvider({ children }: { children: React.ReactNode }) {
     bump();
   }, [bump, persist, state.db, state.projectHash]);
 
+  const importAnnotations = useCallback(async (backup: AnnotationBackup) => {
+    if (!state.db) throw new Error("Open a binary first.");
+    const added = mergeAnnotations(state.db, backup);
+    bump();
+    const mutations = [
+      ...added.names.map((n) => ({ type: "name", op: "set", ...n })),
+      ...added.comments.map((c) => ({ type: "comment", op: "set", ...c })),
+      ...added.bookmarks.map((b) => ({ type: "bookmark", op: "set", ...b })),
+      ...added.tags.map((t) => ({ type: "tag", op: "set", ...t })),
+    ];
+    let saved = 0;
+    // Stop on unavailable storage; the merge remains usable in memory and exportable.
+    for (let i = 0; i < mutations.length; i += 4) {
+      const results = await Promise.all(mutations.slice(i, i + 4).map((body) => api.json(`/api/projects/${added.sha256}`, { method: "PUT", body: JSON.stringify(body) })));
+      saved += results.filter((r) => r.ok).length;
+      if (results.some((r) => !r.ok)) break;
+    }
+    const total = backup.names.length + backup.comments.length + backup.bookmarks.length + backup.tags.length;
+    const message = `Merged ${mutations.length} annotations; kept ${total - mutations.length} existing or duplicate entries.${saved < mutations.length ? " Some changes are only in this session because project storage is unavailable. Keep your backup to restore them later." : ""}`;
+    log(saved < mutations.length ? "warning" : "info", "annotations", message);
+    return message;
+  }, [bump, log, state.db]);
+
   const setComment = useCallback((addr: number, body: string, scope: "line" | "function" = "line") => {
     const db = state.db;
     if (!db) return;
@@ -381,7 +406,7 @@ export function WorkbenchProvider({ children }: { children: React.ReactNode }) {
     setLeftTab: (t) => patch({ leftTab: t }),
     setRightTab: (t) => patch({ rightTab: t }),
     setSelection: (s) => patch({ selection: s }),
-    rename, setComment, toggleBookmark, addTag, removeTag, recordObservation, setVerdict, setWorkerCount, setComputeMode, setGpuLoad,
+    rename, importAnnotations, setComment, toggleBookmark, addTag, removeTag, recordObservation, setVerdict, setWorkerCount, setComputeMode, setGpuLoad,
     setPaletteOpen: (b) => patch({ paletteOpen: b }),
     setGotoOpen: (b) => patch({ gotoOpen: b }),
     setSearchQuery: (q) => patch({ searchQuery: q }),
@@ -391,7 +416,7 @@ export function WorkbenchProvider({ children }: { children: React.ReactNode }) {
     clearActiveQuestion: () => patch({ activeQuestion: null }),
     addLibrary, focusLibrary,
     reanalyze, bump, log,
-  }), [state, openFile, openSample, openCompare, navigate, back, forward, rename, setComment, toggleBookmark, addTag, removeTag, recordObservation, setVerdict, setWorkerCount, setComputeMode, setGpuLoad, addLibrary, focusLibrary, reanalyze, bump, log, patch]);
+  }), [state, openFile, openSample, openCompare, navigate, back, forward, rename, importAnnotations, setComment, toggleBookmark, addTag, removeTag, recordObservation, setVerdict, setWorkerCount, setComputeMode, setGpuLoad, addLibrary, focusLibrary, reanalyze, bump, log, patch]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

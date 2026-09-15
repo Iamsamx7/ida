@@ -15,28 +15,51 @@ export function HexView() {
   const menu = useContextMenu();
   const [pattern, setPattern] = useState("");
   const [hits, setHits] = useState<number[]>([]);
+  const [hitIndex, setHitIndex] = useState(-1);
+  const [matchLength, setMatchLength] = useState(0);
+  const [searchError, setSearchError] = useState("");
+  const [searched, setSearched] = useState(false);
+  const [limited, setLimited] = useState(false);
+  const [searchScroll, setSearchScroll] = useState<{ index: number; nonce: number; address: number | null } | null>(null);
   const [anchor, setAnchor] = useState<number | null>(null);
   if (!db) return null;
   const bytes = db.bytes;
   const rowCount = Math.ceil(bytes.length / BPR);
   const curOff = currentAddr !== null ? db.space.vaToOffset(currentAddr) : null;
-  const scrollTo = curOff !== null ? { index: Math.floor(curOff / BPR), nonce: curOff } : null;
+  const scrollTo = searchScroll && searchScroll.address === currentAddr ? searchScroll : (curOff !== null ? { index: Math.floor(curOff / BPR), nonce: curOff } : null);
   const selStart = selection ? Math.min(selection.start, selection.end) : -1;
   const selEnd = selection ? Math.max(selection.start, selection.end) : -1;
 
   const clickByte = (off: number, e: React.MouseEvent) => {
+    setSearchScroll(null);
     if (e.shiftKey && anchor !== null) wb.setSelection({ start: anchor, end: off });
     else { setAnchor(off); wb.setSelection({ start: off, end: off }); }
     const va = db.space.offsetToVa(off);
     if (va !== null) wb.navigate(va, { push: false, tab: "hex" });
   };
+  const showHit = (index: number, results = hits, length = matchLength) => {
+    if (!results.length) return;
+    const selected = (index + results.length) % results.length;
+    const off = results[selected];
+    setHitIndex(selected);
+    setAnchor(off);
+    wb.setSelection({ start: off, end: off + length - 1 });
+    // Search also covers ELF headers and other bytes with no virtual address.
+    const va = db.space.offsetToVa(off);
+    setSearchScroll({ index: Math.floor(off / BPR), nonce: Date.now(), address: va ?? currentAddr });
+    if (va !== null) wb.navigate(va, { tab: "hex" });
+  };
   const doSearch = () => {
+    setSearchError(""); setSearched(true);
     try {
       const pat = compilePattern(pattern);
-      const res = scanPattern(bytes, pat, 0, bytes.length, 500);
+      const found = scanPattern(bytes, pat, 0, bytes.length, 501);
+      const res = found.slice(0, 500);
+      setLimited(found.length > 500);
       setHits(res);
-      if (res.length) { const va = db.space.offsetToVa(res[0]); wb.setSelection({ start: res[0], end: res[0] + pat.length - 1 }); if (va !== null) wb.navigate(va, { tab: "hex" }); }
-    } catch (e) { wb.log("warning", "hex", String(e)); }
+      setMatchLength(pat.length); setHitIndex(res.length ? 0 : -1);
+      if (res.length) showHit(0, res, pat.length);
+    } catch (e) { setHits([]); setHitIndex(-1); setLimited(false); setSearchError(e instanceof Error ? e.message : String(e)); }
   };
   const copySel = (asHex: boolean) => {
     if (selStart < 0) return;
@@ -59,15 +82,18 @@ export function HexView() {
   };
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-zinc-800 px-3 text-[11px] text-zinc-400">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2 text-[11px] text-zinc-400">
         <span>offset {curOff !== null ? hex(curOff) : "-"} · va {hex(currentAddr)} · {db.space.sectionAt(currentAddr ?? -1)?.name ?? "unmapped"}</span>
         {selStart >= 0 && <Badge tone="sky">{selEnd - selStart + 1} bytes selected</Badge>}
         <div className="ml-auto flex items-center gap-1">
-          <Input value={pattern} onChange={(e) => setPattern(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doSearch()} placeholder="pattern: 7F 45 4C ?? 02" className="w-64 font-mono" />
+          <Input aria-label="Hex byte pattern" value={pattern} onChange={(e) => { setPattern(e.target.value); setHits([]); setHitIndex(-1); setSearched(false); setSearchError(""); }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (hits.length) showHit(hitIndex + (e.shiftKey ? -1 : 1)); else doSearch(); } }} placeholder="pattern: 7F 45 4C ?? 02" className="w-48 font-mono" />
           <Button onClick={doSearch}>Find</Button>
-          {hits.length > 0 && <span>{hits.length} hit(s)</span>}
+          <Button aria-label="Previous hex match" title="Shift+Enter in search" disabled={!hits.length} onClick={() => showHit(hitIndex - 1)}>↑</Button>
+          <Button aria-label="Next hex match" title="Enter in search" disabled={!hits.length} onClick={() => showHit(hitIndex + 1)}>↓</Button>
+          {hits.length > 0 && <span aria-live="polite">{hitIndex + 1} / {hits.length}{limited ? "+" : ""}</span>}
         </div>
       </div>
+      {searched && (!hits.length || limited) && <div role="status" className={`border-b border-zinc-800 px-3 py-1 text-[11px] ${searchError ? "text-rose-300" : "text-zinc-400"}`}>{searchError || (limited ? "Showing the first 500 matches. Refine the pattern to narrow results." : "No matches in this file.")}</div>}
       <VirtualList className="flex-1 font-mono text-[12.5px] leading-5" count={rowCount} rowHeight={ROW} scrollTo={scrollTo} render={(r) => {
         const base = r * BPR;
         const va = db.space.offsetToVa(base);

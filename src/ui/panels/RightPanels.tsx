@@ -7,6 +7,8 @@ import type { AssistantAnswer } from "@/ai/assistant";
 import { suggestName } from "@/ai/assistant";
 import { buildLlmContext } from "@/ai/context";
 import { parseChatEvent, sanitizeHistory, type ChatRequest } from "@/ai/chatProtocol";
+import type { AnalysisDatabase } from "@/core/analysis/database";
+import { downloadText } from "../download";
 
 const KV = ({ k, v }: { k: string; v: React.ReactNode }) => <div className="flex justify-between gap-3 border-b border-zinc-900 py-1 text-[12px]"><span className="text-zinc-500">{k}</span><span className="truncate text-right font-mono text-zinc-200">{v}</span></div>;
 
@@ -140,20 +142,28 @@ interface Msg {
 
 /** Delay between revealed reasoning steps — cosmetic; the LLM request is already running underneath. */
 const REVEAL_MS = 120;
+// Session memory follows the analyzed library, including when a dock is hidden.
+const chatSessions = new WeakMap<AnalysisDatabase, Msg[]>();
 
 export function AIPanel() {
   const wb = useWorkbench();
   const db = wb.db!;
-  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [msgs, setMsgs] = useState<Msg[]>(() => (chatSessions.get(db) ?? []).map((m) => ({ ...m, pending: false, llmMeta: m.llmMeta ? { ...m.llmMeta, streaming: false } : undefined })));
   const [input, setInput] = useState("");
   const [useLLM, setUseLLM] = useState(true);
   const [agentOn, setAgentOn] = useState(true);
   const [thinkingId, setThinkingId] = useState<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
-  const nextId = useRef(1);
+  const nextId = useRef(Math.max(0, ...msgs.map((m) => m.id)) + 1);
+  const generation = useRef(0);
   /** In-flight LLM requests by answer id, so Stop / unmount can abort them. */
   const inflight = useRef<Map<number, AbortController>>(new Map());
-  useEffect(() => () => { for (const c of inflight.current.values()) c.abort(); }, []);
+  useEffect(() => {
+    const requests = inflight.current;
+    const lifecycle = generation;
+    return () => { lifecycle.current++; for (const c of requests.values()) c.abort(); };
+  }, []);
+  useEffect(() => { chatSessions.set(db, msgs); }, [db, msgs]);
   // Messages are keyed by id (not array index) so concurrent questions patch the right bubble.
   const patchMsg = (id: number, f: (m: Msg) => Msg) => setMsgs((m) => m.map((x) => (x.id === id ? f(x) : x)));
   /** Agent hands: execute the assistant's proposed actions against the workbench. */
@@ -215,6 +225,7 @@ export function AIPanel() {
   };
   const ask = async (q: string) => {
     if (!wb.assistant || !q.trim()) return;
+    const runGeneration = generation.current;
     const userId = nextId.current++;
     const answerId = nextId.current++;
     const prior = msgs;
@@ -229,11 +240,12 @@ export function AIPanel() {
     const steps = local.reasoning ?? [];
     for (let i = 1; i <= steps.length; i++) {
       await new Promise((r) => setTimeout(r, REVEAL_MS));
+      if (generation.current !== runGeneration) return;
       const snapshot = steps.slice(0, i);
       patchMsg(answerId, (m) => ({ ...m, answer: { ...local, reasoning: snapshot }, revealed: i }));
     }
     patchMsg(answerId, (m) => ({ ...m, text: local.text, answer: local, revealed: steps.length }));
-    setThinkingId(null);
+    setThinkingId((id) => id === answerId ? null : id);
     // Agent hands: act on the workbench when the answer proposes actions.
     if (agentOn && local.actions?.length) runAgentActions(answerId, local.actions);
     if (local.nameSuggestion && wb.currentAddr !== null) void wb.recordObservation({ address: db.functionAt(wb.currentAddr)?.addr ?? wb.currentAddr, kind: "name-suggestion", content: local.nameSuggestion.name, confidence: local.nameSuggestion.confidence, evidence: local.nameSuggestion.reasons.map((r) => ({ text: r })) });
@@ -247,8 +259,18 @@ export function AIPanel() {
   useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs]);
   const chips = ["⚡ Agent recon", "What does this function do?", "What calls this?", "Why did you classify this?", "Suggest a name", "Find similar functions", "Where is anticheat?", "Where are ban checks?", "Where are hash checks?", "Which libraries does this use?", "Where is memcpy used?", "Where is gettimeofday used?", "Plan a safe bypass", "Verify my patch", "Overview of this binary", "help"];
   const copy = (s: string) => void navigator.clipboard.writeText(s);
+  const clearChat = () => {
+    generation.current++;
+    for (const c of inflight.current.values()) c.abort();
+    setMsgs([]); setThinkingId(null); setInput(""); chatSessions.delete(db);
+  };
+  const exportChat = () => downloadText(`${db.fileName}.chat.md`, [
+    `# Analysis conversation: ${db.fileName}`, `SHA-256: ${db.hash}`, "Session export. Provider prose and local evidence are labeled separately.",
+    ...msgs.map((m) => m.role === "user" ? `## You\n\n${m.text}` : `## Assistant\n\n### Local evidence\n\n${m.text || m.answer?.text || "(in progress)"}${m.llmText ? `\n\n### Provider response${m.llmMeta?.model ? ` (${m.llmMeta.model})` : ""}\n\n${m.llmText}` : ""}${m.pending ? "\n\n(Response still in progress at export time.)" : ""}${m.agentLog?.length ? `\n\n### Actions\n\n${m.agentLog.join("\n")}` : ""}`),
+  ].join("\n\n"), "text/markdown");
   return (
     <div className="flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b border-zinc-800 px-2 py-1.5 text-[11px]"><span className="min-w-0 flex-1 truncate text-sky-300" title={db.fileName}>{db.fileName}</span><Button disabled={!msgs.length} onClick={exportChat}>Export chat</Button><Button disabled={!msgs.length} onClick={clearChat}>Clear chat</Button></div>
       <PanelHeader title="AI assistant" right={<span className="flex items-center gap-2 text-[10px] text-zinc-500"><span className={`h-1.5 w-1.5 rounded-full ${wb.llm?.configured ? "bg-emerald-500" : "bg-amber-500"}`} />{wb.llm?.configured ? `${wb.llm.provider} · ${wb.llm.model}` : "local evidence engine (no LLM key)"}<label className="flex items-center gap-1" title="Agent hands: let the AI navigate, bookmark, tag, rename and comment directly"><input type="checkbox" checked={agentOn} onChange={(e) => setAgentOn(e.target.checked)} />agent</label>{wb.llm?.configured && <label className="flex items-center gap-1" title="Send the verified local answer + structured context to the configured LLM for a second opinion"><input type="checkbox" checked={useLLM} onChange={(e) => setUseLLM(e.target.checked)} />LLM</label>}</span>} />
       <div className="flex-1 overflow-auto p-3 text-[12px]">
         {!msgs.length && <div className="text-zinc-500">Ask about the current function or the whole binary — or give the agent orders (“recon”, “bookmark all anticheat”, “take me to the best hash check”, “tag all ban as evil”, “go to net_send”, “rename this to …”). With <span className="text-zinc-300">agent</span> on, it acts on the workbench, not just talks. Type <span className="text-zinc-300">help</span> for the full list.<div className="mt-3 flex flex-wrap gap-1">{chips.map((c) => <button key={c} onClick={() => { if (c === "⚡ Agent recon") void ask("recon"); else if (c === "Verify my patch") wb.setCenterTab("overview"); else void ask(c); }} className="rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:border-sky-600 hover:text-white">{c}</button>)}</div></div>}

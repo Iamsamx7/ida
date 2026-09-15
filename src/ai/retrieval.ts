@@ -111,6 +111,8 @@ export function parseIntent(q: string, opts?: IntentOptions): Intent {
   if (/^(what does|what is|what'?s|explain|describe|summari[sz]e|tell me about|walk me through|analy[sz]e)\s+(this|it|the (current|selected|highlighted) \w+|this \w+( function| routine| code)?)\b/.test(t) && !/\b(binary|library|module|file|whole)\b/.test(t)) return { kind: "explain", addr };
   if (/^(what does|explain|describe|analy[sz]e|tell me about)\s+(0x[0-9a-f]+|sub_[0-9a-f]+|loc_[0-9a-f]+)\b/.test(t)) return { kind: "explain", addr };
   if (/bypass|defeat.*(anticheat|anti.cheat|protection)|neutrali[sz]e.*check|auto.*(hook|patch)|full.*safe|kill.*anticheat/.test(t)) return { kind: "bypass" };
+  const detector = DETECTOR_QUERIES.find(([pattern]) => pattern.test(t));
+  if (detector) return { kind: "semantic-search", query: detector[1] };
   if (/anti[\s_-]?cheat|antidebug|emulator|root.detect|magisk|frida|xposed|debugger.detect|tamper.detect|integrity.check|where.*(cheat|hack|protect|guard|tss|anogs)/.test(t)) return { kind: "anticheat" };
   if (/\bban(ned)?\b|punish|suspend|violation|report.*cheat|where.*ban/.test(t)) return { kind: "ban" };
   if (/\bhash(check)?\b|checksum|crc.?32|murmur|fnv|xxhash|digest.?verif|verify.*(hash|signature|integrity)|where.*hash/.test(t)) return { kind: "hash" };
@@ -130,6 +132,21 @@ export function parseIntent(q: string, opts?: IntentOptions): Intent {
   if (/^(search|grep|look for)\s/.test(t)) return { kind: "search", query: q.replace(/^(search|grep|look for)\s+/i, "") };
   return { kind: "general", query: q };
 }
+
+const DETECTOR_QUERIES: [RegExp, string][] = [
+  [/debugger[\s_-]detection|anti[\s_-]debugging/, "debugger-detection"],
+  [/root[\s_-]detection/, "root-detection"],
+  [/emulator[\s_-]detection/, "emulator-detection"],
+  [/instrumentation[\s_-]detection|frida[\s_-]detection/, "instrumentation-detection"],
+  [/process[\s_-]inspection/, "process-inspection"],
+  [/(?:tls|certificate)[\s_-]verification/, "tls-verification"],
+  [/(?:certificate|public[\s_-]key)[\s_-]pinning/, "certificate-pinning"],
+  [/signature[\s_-]verification/, "signature-verification"],
+  [/memory[\s_-]permission[\s_-]changes?/, "memory-permission-change"],
+  [/secure[\s_-]random/, "secure-random"],
+  [/secure[\s_-]erasure/, "secure-erasure"],
+  [/native[\s_-]registration/, "native-registration"],
+];
 
 export function packFunction(db: AnalysisDatabase, fn: FunctionRecord, maxInsns = 120): FunctionContextPack {
   const insns = db.decodeFunction(fn, Math.max(maxInsns, 400));

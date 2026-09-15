@@ -11,18 +11,26 @@ import { AddressSpace } from "@/core/address/space";
 import { search } from "@/core/search/engine";
 import { generatePseudocode } from "@/core/analysis/pseudocode";
 import { selectBackend } from "@/compute/backend";
+import { DetectionsView } from "./views/DetectionsView";
+import { ControlFlowView } from "./views/ControlFlowView";
+import { AnnotationDialog } from "./AnnotationDialog";
+import { DEFAULT_LAYOUT, readLayout } from "./layout";
+import { downloadText } from "./download";
 
 interface Command { id: string; label: string; shortcut?: string; run: () => void; when?: () => boolean }
 
 export function Workbench() {
   const wb = useWorkbench();
   const { db } = wb;
-  const [left, setLeft] = useState(300);
-  const [right, setRight] = useState(360);
-  const [bottom, setBottom] = useState(170);
-  const [showLeft, setShowLeft] = useState(true);
-  const [showRight, setShowRight] = useState(true);
-  const [showBottom, setShowBottom] = useState(true);
+  const [initialLayout] = useState(readLayout);
+  const [left, setLeft] = useState(initialLayout.left);
+  const [right, setRight] = useState(initialLayout.right);
+  const [bottom, setBottom] = useState(initialLayout.bottom);
+  const [showLeft, setShowLeft] = useState(initialLayout.showLeft);
+  const [showRight, setShowRight] = useState(initialLayout.showRight);
+  const [showBottom, setShowBottom] = useState(initialLayout.showBottom);
+  const [annotationsOpen, setAnnotationsOpen] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const [bottomTab, setBottomTab] = useState<"console" | "progress">("progress");
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -32,6 +40,15 @@ export function Workbench() {
   const [compareInput, setCompareInput] = useState<HTMLInputElement | null>(null);
   const [workspaceInput, setWorkspaceInput] = useState<HTMLInputElement | null>(null);
 
+  useEffect(() => {
+    try { localStorage.setItem("rw.layout.v1", JSON.stringify({ left, right, bottom, showLeft, showRight, showBottom })); }
+    catch { /* Layout remains usable when browser storage is disabled. */ }
+  }, [left, right, bottom, showLeft, showRight, showBottom]);
+  const resetLayout = useCallback(() => {
+    setLeft(DEFAULT_LAYOUT.left); setRight(DEFAULT_LAYOUT.right); setBottom(DEFAULT_LAYOUT.bottom);
+    setShowLeft(true); setShowRight(true); setShowBottom(true); setFocusMode(false);
+  }, []);
+
   useEffect(() => { void selectBackend(undefined, { mode: wb.computeMode, gpuLoad: wb.gpuLoad, gpuMinBytes: 256 * 1024 }).then((r) => setBackendInfo(`${r.cpu} · ${r.gpu}`)); }, [wb.computeMode, wb.gpuLoad]);
   const pickFile = useCallback(() => fileInput?.click(), [fileInput]);
   const pickCompare = useCallback(() => compareInput?.click(), [compareInput]);
@@ -40,7 +57,7 @@ export function Workbench() {
   const exportData = useCallback((what: "functions" | "strings" | "xrefs" | "disasm" | "pseudo" | "report", fmt: "json" | "csv" | "txt" | "html") => {
     if (!db) return;
     let content = "", name = `${db.fileName}.${what}.${fmt}`;
-    const dl = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([content], { type: fmt === "json" ? "application/json" : fmt === "html" ? "text/html" : "text/plain" })); a.download = name; a.click(); };
+    const dl = () => downloadText(name, content, fmt === "json" ? "application/json" : fmt === "html" ? "text/html" : "text/plain");
     const fnRows = db.functions.map((f) => ({ address: hex(f.addr), name: db.nameFor(f.addr).name, size: f.size, source: f.nameSource, confidence: +f.confidence.toFixed(2), evidence: f.sources.join("+"), classification: f.classes?.[0]?.label ?? "", classConfidence: f.classes?.[0] ? +f.classes[0].confidence.toFixed(2) : "", callers: f.callerCount }));
     const csv = (rows: Record<string, unknown>[]) => rows.length ? [Object.keys(rows[0]).join(","), ...rows.map((r) => Object.values(r).map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))].join("\n") : "";
     if (what === "functions") content = fmt === "json" ? JSON.stringify(fnRows, null, 1) : fmt === "csv" ? csv(fnRows) : fnRows.map((r) => `${r.address} ${r.name} ${r.size} ${r.classification}`).join("\n");
@@ -93,6 +110,9 @@ export function Workbench() {
     { id: "pseudo", label: "Open Pseudocode", run: () => wb.setCenterTab("pseudo"), when: () => !!db },
     { id: "hex", label: "Open Hex View", run: () => wb.setCenterTab("hex"), when: () => !!db },
     { id: "graph", label: "Open Call Graph", run: () => wb.setCenterTab("graph"), when: () => !!db },
+    { id: "detections", label: "Open Detections", run: () => wb.setCenterTab("detections"), when: () => !!db },
+    { id: "flow", label: "Open Function Control Flow", run: () => wb.setCenterTab("flow"), when: () => !!db },
+    { id: "annotations", label: "Annotation backups: export / restore…", run: () => setAnnotationsOpen(true), when: () => !!db },
     { id: "elf", label: "Open ELF Structure", run: () => wb.setCenterTab("elf"), when: () => !!db },
     { id: "overview", label: "Open Library Overview", run: () => wb.setCenterTab("overview"), when: () => !!db },
     { id: "compare", label: "Compare Binary…", run: pickCompare, when: () => !!db },
@@ -111,7 +131,9 @@ export function Workbench() {
     { id: "toggle-left", label: "Toggle left dock", run: () => setShowLeft((v) => !v) },
     { id: "toggle-right", label: "Toggle right dock", run: () => setShowRight((v) => !v) },
     { id: "toggle-bottom", label: "Toggle bottom dock", run: () => setShowBottom((v) => !v) },
-  ], [db, wb, exportData, pickFile, pickCompare, pickWorkspace]);
+    { id: "focus", label: focusMode ? "Leave focus mode" : "Enter focus mode", shortcut: "Ctrl+Shift+L", run: () => setFocusMode((v) => !v) },
+    { id: "reset-layout", label: "Reset workspace layout", run: resetLayout },
+  ], [db, wb, exportData, pickFile, pickCompare, pickWorkspace, focusMode, resetLayout]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -119,6 +141,7 @@ export function Workbench() {
       const tag = (e.target as HTMLElement)?.tagName;
       const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
       const k = e.key.toLowerCase();
+      if (e.ctrlKey && e.shiftKey && k === "l") { e.preventDefault(); setFocusMode((v) => !v); return; }
       if (e.ctrlKey && e.shiftKey && k === "p") { e.preventDefault(); wb.setPaletteOpen(true); return; }
       if (e.ctrlKey && !e.shiftKey && k === "p") { e.preventDefault(); wb.setPaletteOpen(true); return; }
       if (e.ctrlKey && k === "g") { e.preventDefault(); wb.setGotoOpen(true); return; }
@@ -134,25 +157,25 @@ export function Workbench() {
       else if (e.key === ";" && wb.currentAddr !== null) { e.preventDefault(); wb.setCommentTarget(wb.currentAddr); }
       else if (k === "x" && db) wb.setRightTab("xrefs");
       else if (k === "g" && !e.ctrlKey && db) { e.preventDefault(); wb.setGotoOpen(true); }
-      else if (e.key === "Tab" && db && !e.ctrlKey) { e.preventDefault(); wb.setCenterTab(wb.centerTab === "disasm" ? "pseudo" : "disasm"); }
+      else if (e.key === "Tab" && db && !e.ctrlKey && !e.shiftKey && !["BUTTON", "A"].includes(tag) && !wb.paletteOpen && !wb.gotoOpen && !settingsOpen && !annotationsOpen) { e.preventDefault(); wb.setCenterTab(wb.centerTab === "disasm" ? "pseudo" : "disasm"); }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [wb, db, pickFile]);
+  }, [wb, db, pickFile, settingsOpen, annotationsOpen]);
 
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) void wb.openFile(f); };
   const menus: Record<string, Command[]> = {
-    File: commands.filter((c) => ["open", "sample", "add-lib", "compare", "exp-fn", "exp-fn-csv", "exp-str", "exp-xref", "exp-dis", "exp-pse", "exp-rep", "exp-rep-json", "settings"].includes(c.id)),
+    File: commands.filter((c) => ["open", "sample", "add-lib", "compare", "exp-fn", "exp-fn-csv", "exp-str", "exp-xref", "exp-dis", "exp-pse", "exp-rep", "exp-rep-json", "annotations", "settings"].includes(c.id)),
     Edit: commands.filter((c) => ["rename", "comment", "bookmark", "sig"].includes(c.id)),
-    View: commands.filter((c) => ["overview", "disasm", "pseudo", "hex", "graph", "elf", "links", "toggle-left", "toggle-right", "toggle-bottom"].includes(c.id)),
-    Analysis: commands.filter((c) => ["analyze", "xrefs", "similar", "compare", "add-lib", "links"].includes(c.id)),
+    View: commands.filter((c) => ["overview", "disasm", "pseudo", "hex", "graph", "elf", "links", "flow", "detections", "focus", "reset-layout", "toggle-left", "toggle-right", "toggle-bottom"].includes(c.id)),
+    Analysis: commands.filter((c) => ["analyze", "detections", "flow", "xrefs", "similar", "compare", "add-lib", "links"].includes(c.id)),
     Search: commands.filter((c) => ["goto", "search", "quick", "back", "fwd"].includes(c.id)),
     AI: commands.filter((c) => ["explain", "why", "suggest", "similar", "callers", "callees", "anticheat", "ban", "hash", "libs", "memcpy", "time", "bypass", "recon"].includes(c.id)),
     Tools: commands.filter((c) => ["sig", "compare", "settings"].includes(c.id)),
     Help: [{ id: "help", label: "Keyboard shortcuts: Ctrl+G go to · Ctrl+P / Ctrl+Shift+P palette · Ctrl+F search · Alt+←/→ history · F2 rename · ; comment · F9 bookmark · X xrefs · Tab asm/pseudo · Esc back", run: () => {} }],
   };
 
-  const centerTabs: { id: CenterTab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "disasm", label: "Disassembly" }, { id: "pseudo", label: "Pseudocode" }, { id: "hex", label: "Hex" }, { id: "elf", label: "ELF" }, { id: "graph", label: "Call graph" }, { id: "links", label: wb.libs.length > 1 ? `Links (${wb.libs.length})` : "Links" }, { id: "search", label: "Search" }, { id: "compare", label: "Compare" }];
+  const centerTabs: { id: CenterTab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "detections", label: "Detections" }, { id: "disasm", label: "Disassembly" }, { id: "pseudo", label: "Pseudocode" }, { id: "hex", label: "Hex" }, { id: "elf", label: "ELF" }, { id: "graph", label: "Call graph" }, { id: "flow", label: "Control flow" }, { id: "links", label: wb.libs.length > 1 ? `Links (${wb.libs.length})` : "Links" }, { id: "search", label: "Search" }, { id: "compare", label: "Compare" }];
   const leftTabs: { id: LeftTab; label: string }[] = [{ id: "functions", label: "Functions" }, { id: "sections", label: "Sections" }, { id: "imports", label: "Imports" }, { id: "exports", label: "Exports" }, { id: "strings", label: "Strings" }, { id: "structures", label: "Structs" }, { id: "globals", label: "Globals" }, { id: "bookmarks", label: "Bookmarks" }, { id: "tags", label: "Tags" }];
   const rightTabs: { id: RightTab; label: string }[] = [{ id: "info", label: "Info" }, { id: "xrefs", label: "XREFs" }, { id: "ai", label: "AI" }];
   const overall = wb.coordinator?.overallProgress ?? 0;
@@ -164,7 +187,7 @@ export function Workbench() {
       <input ref={setCompareInput} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void wb.openCompare(f); e.target.value = ""; }} />
       <input ref={setWorkspaceInput} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void wb.addLibrary(f); e.target.value = ""; }} />
       {/* Menu bar */}
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-950 px-2 text-[12px]">
+      <div className="flex h-9 shrink-0 items-center gap-1 overflow-visible border-b border-zinc-800 bg-zinc-950 px-2 text-[12px]">
         <span className="mr-3 flex items-center gap-2 font-semibold tracking-tight text-zinc-100"><span className="inline-block h-4 w-4 rounded bg-gradient-to-br from-sky-400 to-violet-500" />soforge</span>
         {Object.keys(menus).map((m) => (
           <div key={m} className="relative" onClick={(e) => e.stopPropagation()}>
@@ -173,7 +196,7 @@ export function Workbench() {
           </div>
         ))}
         <div className="ml-4 flex items-center gap-1"><Button onClick={wb.back} disabled={!wb.canBack} title="Alt+←">←</Button><Button onClick={wb.forward} disabled={!wb.canForward} title="Alt+→">→</Button></div>
-        <button onClick={() => wb.setPaletteOpen(true)} className="ml-3 flex h-7 w-[420px] items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-2 text-zinc-500 hover:border-zinc-600"><span>⌕</span><span>{db ? `Search ${db.fileName} — functions, strings, addresses, bytes… (Ctrl+P)` : "Open a .so to begin (Ctrl+O)"}</span></button>
+        <button onClick={() => wb.setPaletteOpen(true)} className="ml-3 hidden h-7 min-w-0 max-w-[420px] flex-1 xl:flex items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-2 text-zinc-500 hover:border-zinc-600"><span>⌕</span><span>{db ? `Search ${db.fileName} — functions, strings, addresses, bytes… (Ctrl+P)` : "Open a .so to begin (Ctrl+O)"}</span></button>
         <div className="ml-auto flex items-center gap-3 text-[11px] text-zinc-400">
           {db && <span className="font-mono">{hex(wb.currentAddr)} · {wb.currentAddr !== null ? db.labelFor(wb.currentAddr) : ""}</span>}
           {db && running && <span className="flex items-center gap-2"><span className="h-2 w-2 animate-pulse rounded-full bg-sky-400" />Analysis {Math.round(overall * 100)}%</span>}
@@ -185,7 +208,7 @@ export function Workbench() {
       {wb.loading && !db && <div className="flex flex-1 flex-col items-center justify-center gap-3 text-zinc-400"><div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-sky-400" /><div>Parsing {wb.fileName}…</div>{wb.error && <div className="text-rose-400">{wb.error}</div>}</div>}
       {db && (
         <div className="flex min-h-0 flex-1">
-          {showLeft && (<>
+          {showLeft && !focusMode && (<>
             <div style={{ width: left }} className="flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/60">
               <div className="flex shrink-0 flex-wrap border-b border-zinc-800 px-1">{leftTabs.map((t) => <button key={t.id} onClick={() => wb.setLeftTab(t.id)} className={`px-2 py-1.5 text-[11px] ${wb.leftTab === t.id ? "border-b-2 border-sky-500 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>{t.label}</button>)}</div>
               <div className="min-h-0 flex-1">
@@ -197,9 +220,9 @@ export function Workbench() {
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex h-8 shrink-0 items-center border-b border-zinc-800 bg-zinc-950/60 px-1">{centerTabs.map((t) => <button key={t.id} onClick={() => wb.setCenterTab(t.id)} className={`px-3 py-1.5 text-[11px] ${wb.centerTab === t.id ? "border-b-2 border-sky-500 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>{t.label}</button>)}<button onClick={() => setShowLeft((v) => !v)} className="ml-auto px-2 text-[11px] text-zinc-500 hover:text-zinc-200" title="Toggle left dock">◧</button><button onClick={() => setShowBottom((v) => !v)} className="px-2 text-[11px] text-zinc-500 hover:text-zinc-200" title="Toggle bottom dock">⬓</button><button onClick={() => setShowRight((v) => !v)} className="px-2 text-[11px] text-zinc-500 hover:text-zinc-200" title="Toggle right dock">◨</button></div>
             <div className="min-h-0 flex-1">
-              {wb.centerTab === "overview" && <OverviewView />}{wb.centerTab === "disasm" && <DisassemblyView />}{wb.centerTab === "pseudo" && <PseudocodeView />}{wb.centerTab === "hex" && <HexView />}{wb.centerTab === "elf" && <ElfView />}{wb.centerTab === "graph" && <CallGraphView />}{wb.centerTab === "links" && <LinksView />}{wb.centerTab === "search" && <SearchView />}{wb.centerTab === "compare" && <CompareView />}
+              {wb.centerTab === "overview" && <OverviewView />}{wb.centerTab === "detections" && <DetectionsView key={wb.projectHash ?? wb.fileName} />}{wb.centerTab === "disasm" && <DisassemblyView />}{wb.centerTab === "pseudo" && <PseudocodeView />}{wb.centerTab === "hex" && <HexView key={wb.projectHash ?? wb.fileName} />}{wb.centerTab === "elf" && <ElfView />}{wb.centerTab === "graph" && <CallGraphView />}{wb.centerTab === "flow" && <ControlFlowView />}{wb.centerTab === "links" && <LinksView />}{wb.centerTab === "search" && <SearchView />}{wb.centerTab === "compare" && <CompareView />}
             </div>
-            {showBottom && (<>
+            {showBottom && !focusMode && (<>
               <HSplitter onDrag={(dy) => setBottom((h) => Math.max(80, Math.min(500, h - dy)))} />
               <div style={{ height: bottom }} className="flex shrink-0 flex-col border-t border-zinc-800 bg-zinc-950/60">
                 <div className="flex shrink-0 border-b border-zinc-800 px-1">{(["progress", "console"] as const).map((t) => <button key={t} onClick={() => setBottomTab(t)} className={`px-3 py-1 text-[11px] capitalize ${bottomTab === t ? "border-b-2 border-sky-500 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>{t === "progress" ? "Analysis progress" : "Console / logs"}</button>)}<span className="ml-auto px-2 py-1 text-[10px] text-zinc-600">{backendInfo}</span></div>
@@ -207,11 +230,11 @@ export function Workbench() {
               </div>
             </>)}
           </div>
-          {showRight && (<>
+          {showRight && !focusMode && (<>
             <Splitter onDrag={(dx) => setRight((w) => Math.max(260, Math.min(800, w - dx)))} />
             <div style={{ width: right }} className="flex shrink-0 flex-col border-l border-zinc-800 bg-zinc-950/60">
               <div className="flex shrink-0 border-b border-zinc-800 px-1">{rightTabs.map((t) => <button key={t.id} onClick={() => wb.setRightTab(t.id)} className={`px-3 py-1.5 text-[11px] ${wb.rightTab === t.id ? "border-b-2 border-sky-500 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>{t.label}</button>)}</div>
-              <div className="min-h-0 flex-1">{wb.rightTab === "info" && <FunctionInfoPanel />}{wb.rightTab === "xrefs" && <XrefsPanel />}{wb.rightTab === "ai" && <AIPanel />}</div>
+              <div className="min-h-0 flex-1">{wb.rightTab === "info" && <FunctionInfoPanel />}{wb.rightTab === "xrefs" && <XrefsPanel />}<div className={wb.rightTab === "ai" ? "h-full" : "hidden"}><AIPanel key={wb.projectHash ?? wb.fileName} /></div></div>
             </div>
           </>)}
         </div>
@@ -219,15 +242,16 @@ export function Workbench() {
       {/* Status bar */}
       <div className="flex h-6 shrink-0 items-center gap-4 border-t border-zinc-800 bg-zinc-950 px-3 text-[11px] text-zinc-500">
         {db ? <><span>{db.arch?.displayName ?? db.elf.header.machineName}</span><span>{fmtBytes(db.bytes.length)}</span><span>{db.functions.length.toLocaleString()} functions</span><span>{db.strings.length.toLocaleString()} strings</span><span>{db.xrefs.count.toLocaleString()} xrefs</span><span>workers: {wb.workerCount}</span>{wb.projectHash && <span className="font-mono">project {wb.projectHash.slice(0, 12)}</span>}{wb.projectRestored && <span className="text-violet-400">restored {wb.projectRestored.names} names · {wb.projectRestored.comments} comments · {wb.projectRestored.bookmarks} bookmarks</span>}</> : <span>Ready — drop an ELF .so anywhere</span>}
-        <span className="ml-auto">read-only · no code from the target is executed</span>
+        <button onClick={() => setFocusMode((v) => !v)} className="ml-auto text-sky-400 hover:text-sky-200" title="Ctrl+Shift+L">{focusMode ? "Exit focus mode" : "Focus mode"}</button><span>read-only · no code from the target is executed</span>
       </div>
+      {annotationsOpen && db && <AnnotationDialog key={wb.projectHash ?? wb.fileName} onClose={() => setAnnotationsOpen(false)} />}
       <CommandPalette commands={commands} />
       <GoToDialog />
       <RenameDialog />
       <CommentDialog />
       <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)} width={520}>
         <div className="p-4 text-[12px]">
-          <div className="mb-3 text-sm font-semibold text-zinc-100">Settings</div>
+          <div className="mb-3 flex items-center justify-between text-sm font-semibold text-zinc-100">Settings<Button onClick={resetLayout}>Reset layout</Button></div>
           <label className="mb-2 block text-zinc-400">Analysis workers (applies on next open) — {navigator.hardwareConcurrency || "?"} logical cores detected</label>
           <input type="range" min={1} max={16} value={wb.workerCount} onChange={(e) => wb.setWorkerCount(Number(e.target.value))} className="w-full" /><div className="font-mono text-zinc-200">{wb.workerCount} workers</div>
           <div className="mt-4 text-zinc-400">Compute backend (applies on next open)</div>

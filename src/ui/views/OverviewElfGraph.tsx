@@ -53,7 +53,7 @@ export function OverviewView() {
         <h1 className="text-xl font-semibold text-zinc-100">{db.fileName}</h1>
         <span className="text-sm text-zinc-500">{db.elf.soname ?? ""}</span>
         {wb.projectRestored && <Badge tone="violet">project restored</Badge>}
-        {db.elf.stripped && <Badge tone="amber">stripped</Badge>}
+        {db.elf.stripped && <Badge tone="amber">stripped</Badge>}<Button onClick={() => wb.setCenterTab("detections")}>Inspect detections</Button>
         <span className="ml-auto font-mono text-[11px] text-zinc-600">{db.hash ? `sha256 ${db.hash.slice(0, 20)}…` : ""}</span>
       </div>
       <div className="grid grid-cols-4 gap-3 lg:grid-cols-8">

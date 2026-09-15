@@ -1,6 +1,6 @@
 import type { ArchId } from "../elf/types";
 
-export const ANALYSIS_VERSION = "1.0.0";
+export const ANALYSIS_VERSION = "1.1.0";
 
 export type NameSource = "symbol" | "inferred" | "user" | "ai";
 export type Certainty = "fact" | "inference" | "ai-hypothesis" | "user";
